@@ -1,9 +1,15 @@
 import ollama
 import json
+import inspect
+from docstring_parser import parse
 
 # 1. Define the actual Python functions (Tools)
 def get_weather(city: str) -> str:
-    """Mock function to get the weather for a city."""
+    """
+    Get the current weather for a given city.
+    
+    :param city: The city to get the weather for, e.g. Haifa
+    """
     print(f"    [Executing get_weather for {city}]")
     # In a real app, you would call a weather API here
     weather_data = {
@@ -14,7 +20,11 @@ def get_weather(city: str) -> str:
     return weather_data.get(city.lower(), "unknown weather")
 
 def recommend_activity(weather: str) -> str:
-    """Mock function to recommend an activity based on weather."""
+    """
+    Recommend an activity based on the weather.
+    
+    :param weather: The weather condition, e.g. sunny and 25°C
+    """
     print(f"    [Executing recommend_activity for weather: {weather}]")
     weather_lower = weather.lower()
     if "sunny" in weather_lower:
@@ -30,54 +40,70 @@ available_tools = {
     "recommend_activity": recommend_activity
 }
 
-# 2. Define the tool schemas for Ollama
-tools_schema = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get the current weather for a given city",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city": {
-                        "type": "string",
-                        "description": "The city to get the weather for, e.g. Haifa"
-                    }
-                },
-                "required": ["city"]
-            }
+# 2. Automatically build the tool schemas for Ollama using reflection
+def generate_tool_schema(func):
+    sig = inspect.signature(func)
+    doc = parse(func.__doc__)
+    
+    properties = {}
+    required = []
+    
+    for param_name, param in sig.parameters.items():
+        # Find the parameter description from the docstring
+        param_doc = next((p.description for p in doc.params if p.arg_name == param_name), "")
+        
+        # Map Python types to JSON schema types
+        param_type = "string" # Default
+        if param.annotation == int:
+            param_type = "integer"
+        elif param.annotation == float:
+            param_type = "number"
+        elif param.annotation == bool:
+            param_type = "boolean"
+            
+        properties[param_name] = {
+            "type": param_type,
+            "description": param_doc
         }
-    },
-    {
+        
+        if param.default == inspect.Parameter.empty:
+            required.append(param_name)
+            
+    return {
         "type": "function",
         "function": {
-            "name": "recommend_activity",
-            "description": "Recommend an activity based on the weather",
+            "name": func.__name__,
+            "description": doc.short_description or "",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "weather": {
-                        "type": "string",
-                        "description": "The weather condition, e.g. sunny and 25°C"
-                    }
-                },
-                "required": ["weather"]
+                "properties": properties,
+                "required": required
             }
         }
     }
-]
+
+tools_schema = [generate_tool_schema(func) for func in available_tools.values()]
 
 def run_agent(prompt: str, model_name: str = "qwen3:1.7b"):
     print(f"\n--- Starting Agent with prompt: '{prompt}' ---")
     
+    user_promp = input(f"Do you want to use the prompt '{prompt}'? (y/n): ").strip().lower()
+    if user_promp != 'y':
+        prompt = input("Please enter your desired prompt: ").strip()
+    
     # Global Interaction: Ask for user approval before starting the whole process
-    user_input = input(f"Do you approve starting the agent process for prompt: '{prompt}'? (y/n): ").strip().lower()
-    if user_input != 'y':
-        print("[SYSTEM] Agent process denied by user. Exiting.")
+    user_input = input(f"Do you approve starting the agent process for prompt with auto approval? (y/n/c)\n(y - run with auto approval, n - user needs to approve every step, c - cancel all the process): ").strip().lower()
+    
+    if user_input == 'c':
+        print("[SYSTEM] Agent process canceled by user. Exiting.")
         return
+    
+    auto_approve = (user_input == 'y')
 
-    messages = [{"role": "user", "content": prompt}]
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant. You must use the provided tools to answer the user's request whenever possible. Do not make up answers if a tool exists for it."},
+        {"role": "user", "content": prompt}
+    ]
     
     while True:
         print("\n[Agent is thinking...]")
@@ -105,10 +131,15 @@ def run_agent(prompt: str, model_name: str = "qwen3:1.7b"):
             print(f"\n[SYSTEM] The model wants to run tool: '{func_name}'")
             print(f"[SYSTEM] With arguments: {json.dumps(args, indent=2)}")
             
-            # 3. Global Interaction: Ask for user approval before each tool run
-            user_input = input(f"Do you approve running the tool '{func_name}'? (y/n): ").strip().lower()
+            # 3. Global Interaction: Ask for user approval before each tool run if not auto-approved
+            if auto_approve:
+                print("[SYSTEM] Auto-approving tool call.")
+                tool_approved = True
+            else:
+                tool_input = input(f"Do you approve running the tool '{func_name}'? (y/n): ").strip().lower()
+                tool_approved = (tool_input == 'y')
             
-            if user_input == 'y':
+            if tool_approved:
                 print("[SYSTEM] Tool call approved.")
                 func = available_tools.get(func_name)
                 
