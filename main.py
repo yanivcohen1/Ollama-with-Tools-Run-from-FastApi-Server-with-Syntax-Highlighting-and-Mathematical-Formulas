@@ -108,25 +108,48 @@ def run_agent(prompt: str, model_name: str = "qwen3:1.7b"):
     while True:
         print("\n[Agent is thinking...]")
         # Call Ollama with the current conversation history and available tools
-        response = ollama.chat(
+        response_stream = ollama.chat(
             model=model_name,
             messages=messages,
-            tools=tools_schema
+            tools=tools_schema,
+            stream=True
         )
         
-        message = response['message']
-        messages.append(message)
+        full_content = ""
+        tool_calls = []
         
-        # If the model didn't call any tools, it means it has a final answer
-        if not message.get('tool_calls'):
-            print("\n=== Final Response ===")
-            print(message.get('content'))
+        is_final_response = True
+        
+        for chunk in response_stream:
+            msg = chunk['message']
+            
+            if msg.get('tool_calls'):
+                is_final_response = False
+                tool_calls.extend(msg['tool_calls'])
+                
+            if msg.get('content'):
+                if is_final_response and not full_content:
+                    print("\n=== Final Response ===")
+                full_content += msg['content']
+                if is_final_response:
+                    print(msg['content'], end='', flush=True)
+        
+        if is_final_response:
+            print() # Print a newline at the end of the stream
+            messages.append({"role": "assistant", "content": full_content})
             break
             
         # If the model wants to call tools, process them
-        for tool_call in message['tool_calls']:
-            func_name = tool_call['function']['name']
-            args = tool_call['function']['arguments']
+        messages.append({"role": "assistant", "content": full_content, "tool_calls": tool_calls})
+        
+        for tool_call in tool_calls:
+            # Handle both dict and object representations of tool_calls
+            if isinstance(tool_call, dict):
+                func_name = tool_call['function']['name']
+                args = tool_call['function']['arguments']
+            else:
+                func_name = tool_call.function.name
+                args = tool_call.function.arguments
             
             print(f"\n[SYSTEM] The model wants to run tool: '{func_name}'")
             print(f"[SYSTEM] With arguments: {json.dumps(args, indent=2)}")
