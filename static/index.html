@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Web GUI</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            background-color: #f5f5f5; 
+        }
+        #chat-container { 
+            background: white; 
+            border-radius: 8px; 
+            padding: 20px; 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
+            height: 500px; 
+            overflow-y: auto;
+            margin-bottom: 20px; 
+        }
+        .message { 
+            margin-bottom: 15px; 
+            padding: 10px; 
+            border-radius: 5px; 
+        }
+        .system { 
+            background-color: #e9ecef; 
+            color: #555; 
+            font-family: monospace; 
+            font-size: 0.9em; 
+        }
+        .user { 
+            background-color: #d1e7dd; 
+            color: #0f5132; 
+            font-weight: bold; 
+        }
+        .assistant { 
+            background-color: #f8f9fa; 
+            border: 1px solid #dee2e6; 
+        }
+        .tool { 
+            background-color: #fff3cd; 
+            color: #664d03; 
+            font-family: monospace; 
+            font-size: 0.9em; 
+            border-left: 4px solid #ffc107; 
+        }
+        #input-container { 
+            display: flex; 
+            gap: 10px; 
+            align-items: flex-end;
+        }
+        textarea { 
+            flex-grow: 1; 
+            padding: 10px; 
+            border: 1px solid #ccc; 
+            border-radius: 4px; 
+            font-size: 16px; 
+            resize: none;
+            overflow-y: hidden;
+            min-height: 20px;
+            max-height: 150px;
+            font-family: Arial, sans-serif;
+            line-height: 1.5;
+        }
+        button { 
+            padding: 10px 20px; 
+            background-color: #0d6efd; 
+            color: white; 
+            border: none; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            font-size: 16px; 
+            height: 44px;
+        }
+        button:disabled { 
+            background-color: #6c757d; 
+            cursor: not-allowed; 
+        }
+        .markdown-body p { margin-top: 0; }
+    </style>
+</head>
+<body>
+    <h1>Agent Web GUI</h1>
+    <div id="chat-container"></div>
+    <div id="input-container">
+        <textarea id="prompt-input" rows="1" placeholder="Enter your prompt... (Shift+Enter for new line)">What is the weather in Haifa and based on this recommend me an activity suitable for the weather.</textarea>
+        <button id="send-btn" onclick="sendPrompt()">Send</button>
+    </div>
+
+    <script>
+        // Configure marked to use highlight.js
+        marked.setOptions({
+            highlight: function(code, lang) {
+                const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+                return hljs.highlight(code, { language }).value;
+            }
+        });
+
+        const input = document.getElementById('prompt-input');
+        
+        // Auto-grow textarea
+        input.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+            if (this.scrollHeight > 150) {
+                this.style.overflowY = 'auto';
+            } else {
+                this.style.overflowY = 'hidden';
+            }
+        });
+
+        // Handle Enter key to send
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendPrompt();
+            }
+        });
+
+        async function sendPrompt() {
+            const input = document.getElementById('prompt-input');
+            const sendBtn = document.getElementById('send-btn');
+            const chatContainer = document.getElementById('chat-container');
+            const prompt = input.value.trim();
+            
+            if (!prompt) return;
+
+            // Disable input while processing
+            input.disabled = true;
+            sendBtn.disabled = true;
+
+            // Append user message and clear input
+            appendMessage('user', `User: ${prompt}`);
+            input.value = '';
+            input.style.height = 'auto'; // Reset height
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: prompt })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+                
+                let currentAssistantDiv = null;
+                let finalResponseText = "";
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    
+                    let boundary = buffer.indexOf('\n\n');
+                    while (boundary !== -1) {
+                        const message = buffer.slice(0, boundary);
+                        buffer = buffer.slice(boundary + 2);
+                        
+                        if (message.startsWith('data: ')) {
+                            const data = JSON.parse(message.substring(6));
+                            
+                            if (data.type === 'status') {
+                                appendMessage('system', `[SYSTEM] ${data.content}`);
+                            } else if (data.type === 'tool_result') {
+                                appendMessage('tool', `[TOOL] ${data.content}`);
+                            } else if (data.type === 'token') {
+                                if (!currentAssistantDiv) {
+                                    appendMessage('system', `[SYSTEM] === Final Response ===`);
+                                    currentAssistantDiv = createMessageDiv('assistant');
+                                    chatContainer.appendChild(currentAssistantDiv);
+                                }
+                                finalResponseText += data.content;
+                                currentAssistantDiv.innerHTML = marked.parse(finalResponseText);
+                                chatContainer.scrollTop = chatContainer.scrollHeight;
+                            } else if (data.type === 'done') {
+                                // Finished
+                            }
+                        }
+                        boundary = buffer.indexOf('\n\n');
+                    }
+                }
+            } catch (error) {
+                appendMessage('system', `[ERROR] ${error.message}`);
+            } finally {
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        }
+
+        function createMessageDiv(role) {
+            const div = document.createElement('div');
+            div.className = `message ${role} markdown-body`;
+            return div;
+        }
+
+        function appendMessage(role, text) {
+            const chatContainer = document.getElementById('chat-container');
+            const div = createMessageDiv(role);
+            if (role === 'assistant') {
+                div.innerHTML = marked.parse(text);
+            } else {
+                // Preserve newlines for user messages
+                div.style.whiteSpace = 'pre-wrap';
+                div.textContent = text;
+            }
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+    </script>
+</body>
+</html>
