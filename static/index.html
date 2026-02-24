@@ -127,6 +127,9 @@
             }
         });
 
+        // Generate a unique session ID for this tab
+        const sessionId = Math.random().toString(36).substring(2, 15);
+
         const input = document.getElementById('prompt-input');
         
         // Auto-grow textarea
@@ -169,67 +172,141 @@
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: prompt })
+                    body: JSON.stringify({ session_id: sessionId, action: 'prompt', prompt: prompt })
                 });
 
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = "";
-                
-                let currentAssistantDiv = null;
-                let finalResponseText = "";
+                await processStream(response);
+            } catch (error) {
+                appendMessage('system', `[ERROR] ${error.message}`);
+            } finally {
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        }
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
+        async function processStream(response) {
+            const chatContainer = document.getElementById('chat-container');
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            
+            let currentAssistantDiv = null;
+            let finalResponseText = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                
+                let boundary = buffer.indexOf('\n\n');
+                while (boundary !== -1) {
+                    const message = buffer.slice(0, boundary);
+                    buffer = buffer.slice(boundary + 2);
                     
-                    buffer += decoder.decode(value, { stream: true });
-                    
-                    let boundary = buffer.indexOf('\n\n');
-                    while (boundary !== -1) {
-                        const message = buffer.slice(0, boundary);
-                        buffer = buffer.slice(boundary + 2);
+                    if (message.startsWith('data: ')) {
+                        const data = JSON.parse(message.substring(6));
                         
-                        if (message.startsWith('data: ')) {
-                            const data = JSON.parse(message.substring(6));
-                            
-                            if (data.type === 'status') {
-                                appendMessage('system', `[SYSTEM] ${data.content}`);
-                            } else if (data.type === 'tool_result') {
-                                appendMessage('tool', `[TOOL] ${data.content}`);
-                            } else if (data.type === 'token') {
-                                if (!currentAssistantDiv) {
-                                    appendMessage('system', `[SYSTEM] === Final Response ===`);
-                                    currentAssistantDiv = createMessageDiv('assistant');
-                                    chatContainer.appendChild(currentAssistantDiv);
-                                }
-                                finalResponseText += data.content;
-                                currentAssistantDiv.innerHTML = marked.parse(finalResponseText);
-                                
-                                // Apply syntax highlighting to newly added code blocks
-                                currentAssistantDiv.querySelectorAll('pre code').forEach((block) => {
-                                    hljs.highlightElement(block);
-                                });
-                                
-                                // Render math formulas
-                                renderMathInElement(currentAssistantDiv, {
-                                    delimiters: [
-                                        {left: '$$', right: '$$', display: true},
-                                        {left: '$', right: '$', display: false},
-                                        {left: '\\(', right: '\\)', display: false},
-                                        {left: '\\[', right: '\\]', display: true}
-                                    ],
-                                    throwOnError: false
-                                });
-                                
-                                chatContainer.scrollTop = chatContainer.scrollHeight;
-                            } else if (data.type === 'done') {
-                                // Finished
+                        if (data.type === 'status') {
+                            appendMessage('system', `[SYSTEM] ${data.content}`);
+                        } else if (data.type === 'tool_result') {
+                            appendMessage('tool', `[TOOL] ${data.content}`);
+                        } else if (data.type === 'token') {
+                            if (!currentAssistantDiv) {
+                                appendMessage('system', `[SYSTEM] === Final Response ===`);
+                                currentAssistantDiv = createMessageDiv('assistant');
+                                chatContainer.appendChild(currentAssistantDiv);
                             }
+                            finalResponseText += data.content;
+                            currentAssistantDiv.innerHTML = marked.parse(finalResponseText);
+                            
+                            // Apply syntax highlighting to newly added code blocks
+                            currentAssistantDiv.querySelectorAll('pre code').forEach((block) => {
+                                hljs.highlightElement(block);
+                            });
+                            
+                            // Render math formulas
+                            renderMathInElement(currentAssistantDiv, {
+                                delimiters: [
+                                    {left: '$$', right: '$$', display: true},
+                                    {left: '$', right: '$', display: false},
+                                    {left: '\\(', right: '\\)', display: false},
+                                    {left: '\\[', right: '\\]', display: true}
+                                ],
+                                throwOnError: false
+                            });
+                            
+                            chatContainer.scrollTop = chatContainer.scrollHeight;
+                        } else if (data.type === 'tool_approval_request') {
+                            const toolDetails = data.tool_calls.map(tc => {
+                                const args = typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments, null, 2);
+                                return `${tc.function.name}(${args})`;
+                            }).join('\n');
+                            appendMessage('system', `[SYSTEM] The model wants to run tool:\n${toolDetails}`);
+                            showApprovalUI(data.tool_calls, data.remaining_tools);
+                        } else if (data.type === 'done') {
+                            // Finished
                         }
-                        boundary = buffer.indexOf('\n\n');
                     }
+                    boundary = buffer.indexOf('\n\n');
                 }
+            }
+        }
+
+        function showApprovalUI(toolCalls, remainingTools) {
+            const chatContainer = document.getElementById('chat-container');
+            const div = document.createElement('div');
+            div.className = 'message system';
+            div.id = 'approval-ui';
+            
+            const text = document.createElement('p');
+            text.textContent = 'Do you approve running these tools?';
+            div.appendChild(text);
+            
+            const btnApprove = document.createElement('button');
+            btnApprove.textContent = 'Approve';
+            btnApprove.style.marginRight = '10px';
+            btnApprove.onclick = () => handleApproval('approve_tool', toolCalls, remainingTools);
+            
+            const btnDeny = document.createElement('button');
+            btnDeny.textContent = 'Deny';
+            btnDeny.style.marginRight = '10px';
+            btnDeny.style.backgroundColor = '#dc3545';
+            btnDeny.onclick = () => handleApproval('deny_tool', toolCalls, remainingTools);
+            
+            const btnAuto = document.createElement('button');
+            btnAuto.textContent = 'Auto-Approve All';
+            btnAuto.style.backgroundColor = '#198754';
+            btnAuto.onclick = () => handleApproval('auto_approve', toolCalls, remainingTools);
+            
+            div.appendChild(btnApprove);
+            div.appendChild(btnDeny);
+            div.appendChild(btnAuto);
+            
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        async function handleApproval(action, toolCalls, remainingTools) {
+            // Remove the approval UI
+            const approvalUI = document.getElementById('approval-ui');
+            if (approvalUI) approvalUI.remove();
+            
+            // Disable input
+            const input = document.getElementById('prompt-input');
+            const sendBtn = document.getElementById('send-btn');
+            input.disabled = true;
+            sendBtn.disabled = true;
+            
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, action: action, tool_calls: toolCalls, remaining_tools: remainingTools })
+                });
+                
+                await processStream(response);
             } catch (error) {
                 appendMessage('system', `[ERROR] ${error.message}`);
             } finally {
