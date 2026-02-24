@@ -108,6 +108,24 @@ async def agent_generator(session_id: str, prompt: str = None, action: str = "pr
     auto_approve = session["auto_approve"]
     
     if action == "prompt":
+        # Reset auto_approve for every new user query
+        session["auto_approve"] = False
+        session["tools_denied_this_turn"] = False
+        auto_approve = False
+        
+        # Clean up any dangling tool calls from previous interrupted turns
+        cleaned_history = []
+        for msg in chat_history:
+            if msg["role"] == "tool":
+                continue
+            if msg["role"] == "assistant" and "tool_calls" in msg:
+                if msg.get("content"):
+                    cleaned_history.append({"role": "assistant", "content": msg["content"]})
+                continue
+            cleaned_history.append(msg)
+        session["chat_history"] = cleaned_history
+        chat_history = session["chat_history"]
+        
         chat_history.append({"role": "user", "content": prompt})
         yield f"data: {json.dumps({'type': 'status', 'content': 'Agent is thinking...'})}\n\n"
     elif action == "auto_approve":
@@ -151,8 +169,10 @@ async def agent_generator(session_id: str, prompt: str = None, action: str = "pr
                 chat_history.append({
                     "role": "tool",
                     "name": func_name,
-                    "content": "User denied the execution of this tool."
+                    "content": "User denied the execution of this tool. Please respond to the user without using this tool."
                 })
+                remaining_tools = [] # Stop asking for remaining tools in this batch
+                session["tools_denied_this_turn"] = True
                 
         # If there are more tools to approve, ask for the next one immediately
         if remaining_tools and not auto_approve:
@@ -196,6 +216,7 @@ async def agent_generator(session_id: str, prompt: str = None, action: str = "pr
         yield f"data: {json.dumps({'type': 'status', 'content': 'Agent is thinking...'})}\n\n"
     
     while True:
+        print(f"--- Calling Ollama with chat_history: {json.dumps(chat_history, indent=2)} ---")
         # Call Ollama with the current conversation history and available tools
         response_stream = ollama.chat(
             model="qwen3:1.7b",
@@ -222,13 +243,26 @@ async def agent_generator(session_id: str, prompt: str = None, action: str = "pr
                     await asyncio.sleep(0.01) # Small delay to allow UI to update smoothly
         
         if is_final_response:
-            chat_history.append({"role": "assistant", "content": full_content})
+            # Clean up previous tool calls and tool results to prevent the model from repeating them
+            cleaned_history = []
+            for msg in chat_history:
+                if msg["role"] == "tool":
+                    continue
+                if msg["role"] == "assistant" and "tool_calls" in msg:
+                    if msg.get("content"):
+                        cleaned_history.append({"role": "assistant", "content": msg["content"]})
+                    continue
+                cleaned_history.append(msg)
+            
+            session["chat_history"] = cleaned_history
+            session["chat_history"].append({"role": "assistant", "content": full_content})
+            
+            # Reset auto_approve at the end of the turn
+            session["auto_approve"] = False
+            
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             break
             
-        # If the model wants to call tools, process them
-        chat_history.append({"role": "assistant", "content": full_content, "tool_calls": tool_calls})
-        
         # Convert tool_calls to dicts for JSON serialization
         serializable_tool_calls = []
         for tc in tool_calls:
@@ -242,8 +276,29 @@ async def agent_generator(session_id: str, prompt: str = None, action: str = "pr
                     }
                 })
                 
+        # If the model wants to call tools, process them
+        chat_history.append({"role": "assistant", "content": full_content, "tool_calls": serializable_tool_calls})
+        
         if not auto_approve:
             if serializable_tool_calls:
+                if session.get("tools_denied_this_turn", False):
+                    yield f"data: {json.dumps({'type': 'status', 'content': 'Agent tried to call tools again, but was blocked because of previous denial.'})}\n\n"
+                    
+                    # Clean up history before ending the turn
+                    cleaned_history = []
+                    for msg in chat_history:
+                        if msg["role"] == "tool":
+                            continue
+                        if msg["role"] == "assistant" and "tool_calls" in msg:
+                            if msg.get("content"):
+                                cleaned_history.append({"role": "assistant", "content": msg["content"]})
+                            continue
+                        cleaned_history.append(msg)
+                    session["chat_history"] = cleaned_history
+                    
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    break
+                    
                 # If there are multiple tools, we only ask for the first one to allow step-by-step approval
                 first_tool = serializable_tool_calls[0]
                 yield f"data: {json.dumps({'type': 'tool_approval_request', 'tool_calls': [first_tool], 'remaining_tools': serializable_tool_calls[1:]})}\n\n"

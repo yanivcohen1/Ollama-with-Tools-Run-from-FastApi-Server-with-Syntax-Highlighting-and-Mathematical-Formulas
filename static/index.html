@@ -159,6 +159,10 @@
             
             if (!prompt) return;
 
+            // Remove any existing approval UI
+            const approvalUIs = document.querySelectorAll('.approval-ui');
+            approvalUIs.forEach(ui => ui.remove());
+
             // Disable input while processing
             input.disabled = true;
             sendBtn.disabled = true;
@@ -257,8 +261,7 @@
         function showApprovalUI(toolCalls, remainingTools) {
             const chatContainer = document.getElementById('chat-container');
             const div = document.createElement('div');
-            div.className = 'message system';
-            div.id = 'approval-ui';
+            div.className = 'message system approval-ui';
             
             const text = document.createElement('p');
             text.textContent = 'Do you approve running these tools?';
@@ -290,8 +293,8 @@
 
         async function handleApproval(action, toolCalls, remainingTools) {
             // Remove the approval UI
-            const approvalUI = document.getElementById('approval-ui');
-            if (approvalUI) approvalUI.remove();
+            const approvalUIs = document.querySelectorAll('.approval-ui');
+            approvalUIs.forEach(ui => ui.remove());
             
             // Disable input
             const input = document.getElementById('prompt-input');
