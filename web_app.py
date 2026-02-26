@@ -192,6 +192,8 @@ async def agent_generator(session_id: str, prompt: str = None, action: str = "pr
                 func_name = tool_call['function']['name']
                 args = tool_call['function']['arguments']
                 
+                args_str = args if isinstance(args, str) else json.dumps(args, indent=2)
+                yield f"data: {json.dumps({'type': 'status', 'content': f'The model wants to run tool:\\n{func_name}({args_str})'})}\n\n"
                 yield f"data: {json.dumps({'type': 'status', 'content': f'Auto-approving tool: {func_name}'})}\n\n"
                 
                 func = available_tools.get(func_name)
@@ -317,6 +319,8 @@ async def agent_generator(session_id: str, prompt: str = None, action: str = "pr
             func_name = tool_call['function']['name']
             args = tool_call['function']['arguments']
             
+            args_str = args if isinstance(args, str) else json.dumps(args, indent=2)
+            yield f"data: {json.dumps({'type': 'status', 'content': f'The model wants to run tool:\\n{func_name}({args_str})'})}\n\n"
             yield f"data: {json.dumps({'type': 'status', 'content': f'Auto-approving tool: {func_name}'})}\n\n"
             
             func = available_tools.get(func_name)
