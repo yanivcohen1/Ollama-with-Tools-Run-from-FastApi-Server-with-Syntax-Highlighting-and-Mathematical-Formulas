@@ -1,3 +1,4 @@
+import os
 import ollama
 import json
 import inspect
@@ -8,6 +9,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import asyncio
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
 
 app = FastAPI()
 
@@ -219,7 +225,7 @@ async def agent_generator(session_id: str, prompt: str = None, action: str = "pr
         print(f"--- Calling Ollama with chat_history: {json.dumps(chat_history, indent=2)} ---")
         # Call Ollama with the current conversation history and available tools
         response_stream = ollama.chat(
-            model="qwen3:1.7b",
+            model=OLLAMA_MODEL,
             messages=chat_history,
             tools=tools_schema,
             stream=True
