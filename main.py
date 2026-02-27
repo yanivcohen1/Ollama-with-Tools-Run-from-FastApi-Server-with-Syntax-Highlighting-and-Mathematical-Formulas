@@ -1,7 +1,13 @@
+import os
 import ollama
 import json
 import inspect
 from docstring_parser import parse
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
 
 # 1. Define the actual Python functions (Tools)
 def get_weather(city: str) -> str:
@@ -109,7 +115,7 @@ def run_agent(prompt: str, model_name: str = "qwen3:1.7b"):
         print("\n[Agent is thinking...]")
         # Call Ollama with the current conversation history and available tools
         response_stream = ollama.chat(
-            model=model_name,
+            model=OLLAMA_MODEL,
             messages=messages,
             tools=tools_schema,
             stream=True
