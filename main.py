@@ -7,8 +7,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
-
 # 1. Define the actual Python functions (Tools)
 def get_weather(city: str) -> str:
     """
@@ -90,32 +88,27 @@ def generate_tool_schema(func):
 
 tools_schema = [generate_tool_schema(func) for func in available_tools.values()]
 
-def run_agent(prompt: str, model_name: str = "qwen3:1.7b"):
-    print(f"\n--- Starting Agent with prompt: '{prompt}' ---")
+def run_agent(prompt: str, model_name: str = "qwen3:1.7b", messages: list = None):
+    # print(f"\n--- Starting Agent with prompt: '{prompt}' ---")
     
     user_promp = input(f"Do you want to use the prompt '{prompt}'? (y/n): ").strip().lower()
     if user_promp != 'y':
         prompt = input("Please enter your desired prompt: ").strip()
     
-    # Global Interaction: Ask for user approval before starting the whole process
-    user_input = input(f"Do you approve starting the agent process for prompt with auto approval? (y/n/c)\n(y - run with auto approval, n - user needs to approve every step, c - cancel all the process): ").strip().lower()
-    
-    if user_input == 'c':
-        print("[SYSTEM] Agent process canceled by user. Exiting.")
-        return
-    
-    auto_approve = (user_input == 'y')
+    auto_approve = None
 
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant. You must use the provided tools to answer the user's request whenever possible. Do not make up answers if a tool exists for it."},
-        {"role": "user", "content": prompt}
-    ]
+    if messages is None:
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant. You must use the provided tools to answer the user's request whenever possible. Do not make up answers if a tool exists for it."}
+        ]
+        
+    messages.append({"role": "user", "content": prompt})
     
     while True:
         print("\n[Agent is thinking...]")
         # Call Ollama with the current conversation history and available tools
         response_stream = ollama.chat(
-            model=OLLAMA_MODEL,
+            model=model_name,
             messages=messages,
             tools=tools_schema,
             stream=True
@@ -148,6 +141,15 @@ def run_agent(prompt: str, model_name: str = "qwen3:1.7b"):
         # If the model wants to call tools, process them
         messages.append({"role": "assistant", "content": full_content, "tool_calls": tool_calls})
         
+        if tool_calls and auto_approve is None:
+            user_input = input(f"The agent wants to use tools. Do you approve running tools with auto approval? (y/n/c)\n(y - run with auto approval, n - user needs to approve every step, c - cancel all the process): ").strip().lower()
+            
+            if user_input == 'c':
+                print("[SYSTEM] Agent process canceled by user. Exiting.")
+                return messages
+            
+            auto_approve = (user_input == 'y')
+
         for tool_call in tool_calls:
             # Handle both dict and object representations of tool_calls
             if isinstance(tool_call, dict):
@@ -207,16 +209,22 @@ def run_agent(prompt: str, model_name: str = "qwen3:1.7b"):
                     "content": "User denied the execution of this tool. Please provide an alternative response or ask the user for clarification."
                 })
 
+    return messages
+
 if __name__ == "__main__":
     # You can change 'llama3.1' to whatever model you have installed in Ollama that supports tools
     # e.g., 'llama3.2', 'mistral', 'qwen2.5'
-    MODEL_NAME = "qwen3:1.7b" 
+    MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
     
     USER_PROMPT = "What is the weather in Haifa and based on this recommend me an activity suitable for the weather."
+    chat_history = None
     
-    try:
-        run_agent(USER_PROMPT, model_name=MODEL_NAME)
-    except ollama.ResponseError as e:
-        print(f"\n[ERROR] Ollama API Error: {e}")
-        print(f"Make sure Ollama is running and you have pulled the '{MODEL_NAME}' model.")
-        print(f"Run: ollama run {MODEL_NAME}")
+    while True:
+        try:
+            chat_history = run_agent(USER_PROMPT, model_name=MODEL_NAME, messages=chat_history)
+            # USER_PROMPT = "What else can you help me with?"
+        except ollama.ResponseError as e:
+            print(f"\n[ERROR] Ollama API Error: {e}")
+            print(f"Make sure Ollama is running and you have pulled the '{MODEL_NAME}' model.")
+            print(f"Run: ollama run {MODEL_NAME}")
+            break
